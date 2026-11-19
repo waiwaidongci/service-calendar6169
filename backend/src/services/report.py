@@ -8,9 +8,12 @@ import redis
 def submit(db,user,body):
  policy=db.get(Policy,body.policy_id)
  if not policy: raise HTTPException(404,'口径版本不存在')
- sources=[x.data for x in db.query(Source).order_by(Source.id).all() if body.period=='全部' or x.data.get('period')==body.period]
- if not sources: raise HTTPException(422,'所选期间没有底稿')
- snapshot={'policy':policy.data,'sources':sources,'period':body.period}
+ records=[x for x in db.query(Source).order_by(Source.id).all() if body.period=='全部' or x.data.get('period')==body.period]
+ if not records: raise HTTPException(422,'所选期间没有底稿')
+ sources=[x.data for x in records]
+ # 自然键并行冻结：不进业务data（不破坏字段校验），但计入checksum，供占用逐笔追溯还原底稿键
+ natural_keys=[x.natural_key for x in records]
+ snapshot={'policy':policy.data,'sources':sources,'natural_keys':natural_keys,'period':body.period}
  checksum=hashlib.sha256(json.dumps(snapshot,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
  obj=Run(name=body.name,status='queued',snapshot=snapshot,checksum=checksum,created=time.time(),approved=False)
  db.add(obj);log(db,user.email,'run.queue',body.name);db.commit()

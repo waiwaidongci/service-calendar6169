@@ -1,6 +1,11 @@
-import {request} from './client.js';
+import {request,download} from './client.js';
 export const loadAll=async()=>Object.fromEntries(await Promise.all(['sources','periods','policies','runs','schedules','deliveries','audits'].map(async k=>[k,await request('/'+k)])));
 export const saveSource=(data,id)=>request('/sources'+(id?'/'+id:''),id?'PUT':'POST',{data});
 export const savePolicy=data=>request('/policies','POST',{data});
 export const submitRun=data=>request('/runs','POST',data);
-export const approveRun=(id,note)=>request('/runs/'+id+'/approve','POST',{note});
+export const approveRun=(id,note)=>request('/runs/'+id+'/approve',{note});
+export const loadSegments=(id,day,offset=0)=>request(`/runs/${id}/occupancy/segments?limit=100&offset=${offset}`+(day?`&day=${encodeURIComponent(day)}`:''));
+export const loadApportion=id=>request(`/runs/${id}/occupancy/apportion`);
+export const loadTrace=(id,params,offset=0)=>request(`/runs/${id}/occupancy/trace?limit=50&offset=${offset}`+(params?.natural_key?`&natural_key=${encodeURIComponent(params.natural_key)}`:'')+(params?.group?`&group=${encodeURIComponent(params.group)}`:''));
+export const downloadOccupancy=id=>download(`/runs/${id}/occupancy/csv`);
+export const downloadTrace=(id,params)=>download(`/runs/${id}/occupancy/trace/csv`+(params?.natural_key?`?natural_key=${encodeURIComponent(params.natural_key)}`:params?.group?`?group=${encodeURIComponent(params.group)}`:''));

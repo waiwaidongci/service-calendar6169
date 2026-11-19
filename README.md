@@ -12,6 +12,16 @@
 
 业务时钟 · 午休与假日显式扣除。输入：业务底稿与口径JSON；输出：summary、透视rows、method、warnings。算法实现在`backend/src/services/calculation.py`，输入校验在`validation.py`。固定seed=42，240条合成数据；未对接真实业务系统。修改源数据和新建因子/口径不会改变已提交报告。
 
+### 服务占用去重分摊（多组在途重叠）
+多组同时有待办时，逐单相加会把重叠的服务占用重复计算。本模块在原SLA之外并行产出`result.occupancy`，原SLA口径与字段完全不变：
+- **冻结底稿**：与报告同一快照，运行期间改源数据不影响本次结果。
+- **扫描线分段，不逐分钟展开**：在途区间与营业时窗统一转口径时区后生成边界事件，按时间排序切分重叠段，复杂度 O(N log N)，分段数与事件数同阶；十万单并发实测约2秒、数百段（见`backend/tests`）。
+- **按在途单数分摊**：一个重叠段的去重分钟，按当时各小组在途单数占比分给各组（组g分得=段分钟×组g在途单数/段内总在途单数）；午休、假日、非工作日不落任何分段。
+- **全局四舍五入与两级最大余数法**：全局分钟按半数上进取整后，先分业务日期、再分小组；余数大者先补，真同余按日期ISO或组名升序确定归属，整数分钟严格守恒、结果可复算。
+- **中断续跑、重试不重复分摊**：扫描状态（事件游标、营业时窗栈、跨段在途单、累计精确分摊、峰值）按检查点落`occupancy_checkpoints`；worker崩溃后running任务重新入队，从游标接回跨段在途单。重叠段落`occupancy_segments`，`(run_id,ordinal)`唯一，重试幂等不重复写。
+- **发布闸门**：仅当全局值与日期×小组分摊明细齐全且守恒（小组和=日期和=全局整数分钟）才写`occupancy_apportion`并置completed；失败回滚发布物、保留检查点，报告页显示`occupancy_error`且不影响原SLA结果。
+- **可查可导**：前端「占用分摊报告」页（`#occupancy`）提供分摊明细、日期合计、重叠段按日期分页、逐笔追溯（底稿键/小组筛选）与两类CSV；后端端点在`/runs/{id}/occupancy/*`。核心引擎在`src/services/occupancy.py`（纯标准库），持久化编排在`src/services/occupancy_run.py`。
+
 ## 一天的验收剧本
 1. 09:00 admin查看240条seed底稿与具名业务期间。
 2. 09:10 analyst添加`service-calendar-202611.csv`的一条具名业务记录。
@@ -52,3 +62,13 @@ MIT License。
 来源记录（Source，专属业务字段校验）、口径版本（Policy）、核算报告（Run）、交付计划（Schedule）、交付（Delivery）均经数据库→模型→请求schema→service→route/controller→frontend API→store→page。Period为已有来源期间字典，在任务期间选择器使用；不单独作为复杂度计数。底稿JSON为小型多字段单记录存储，不虚构未落库的子实体。
 
 实际表：期间字典 service_periods；专属来源 service_cases；冻结口径 business_calendars；异步报告 sla_runs。
+
+占用去重分摊配套表（002迁移，启动自动建表）：`occupancy_checkpoints`（每run一行的扫描检查点，接回跨段在途单）、`occupancy_segments`（重叠段去重明细，run+ordinal唯一）、`occupancy_apportion`（日期×小组整数分摊，过发布闸门才写入）、`occupancy_traces`（逐笔在途单去重/未去重分钟与参与段数）。
+
+## 离线测试
+无外部依赖，标准库即可运行（无需数据库/Redis）：
+```sh
+cd backend
+python3 -m tests.test_occupancy        # 引擎：去重、分摊、取整、续跑、十万单性能、发布闸门（59项）
+python3 -m tests.test_occupancy_persist # 编排：检查点、幂等写段、崩溃续跑、分页筛选（40项，内存假库）
+```
